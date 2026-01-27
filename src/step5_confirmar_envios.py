@@ -2,7 +2,9 @@ import os
 from datetime import datetime, date
 import pandas as pd
 
-ARQUIVO_CONTROLE = os.getenv("CONTROLE_PRODUTOS_XLSX", "controle_produtos.xlsx")
+import os
+ARQUIVO_CONTROLE = os.getenv("CONTROLE_PRODUTOS_XLSX", "data/controle_produtos.xlsx")
+
 
 ABA_BASE = "produtos_base"
 ABA_AGENDA = "agenda_dia"

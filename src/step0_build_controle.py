@@ -7,7 +7,9 @@ import pandas as pd
 # CONFIG
 # ==========================
 CSV_PICKS = os.getenv("PICKS_REFINADOS_CSV", "picks_refinados.csv")
-ARQUIVO_CONTROLE = os.getenv("CONTROLE_PRODUTOS_XLSX", "controle_produtos.xlsx")
+import os
+ARQUIVO_CONTROLE = os.getenv("CONTROLE_PRODUTOS_XLSX", "data/controle_produtos.xlsx")
+
 ABA_BASE = "produtos_base"
 
 MIN_AVALIACAO = 4.5
