@@ -1,20 +1,35 @@
+# pipeline/step0_fetch_offers.py
+from __future__ import annotations
+
 import os
+import sys
+from pathlib import Path
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from src.shopee_affiliates_client import ShopeeAffiliatesClient
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.shopee_affiliates_client import ShopeeAffiliatesClient  # noqa: E402
 
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-OUT_XLSX = os.path.join(DATA_DIR, "controle_produtos.xlsx")
+DATA_DIR = PROJECT_ROOT / "data"
+OUT_XLSX = DATA_DIR / "controle_produtos.xlsx"
 
 QUERY_NAME = "productOfferV2"
 
+# API LIMIT HARD CAP (segundo o erro da própria API)
+API_MAX_LIMIT = 50
+
 LIMIT = int(os.getenv("STEP0_LIMIT", "50"))
-MAX_PAGES = int(os.getenv("STEP0_MAX_PAGES", "1"))
+if LIMIT > API_MAX_LIMIT:
+    print(f"INFO Step0: STEP0_LIMIT={LIMIT} excede máximo da API ({API_MAX_LIMIT}). Ajustando para {API_MAX_LIMIT}.")
+    LIMIT = API_MAX_LIMIT
+
+MAX_PAGES = int(os.getenv("STEP0_MAX_PAGES", "30"))
 
 KEYWORD = os.getenv("STEP0_KEYWORD", "").strip() or None
 SORT_TYPE = int(os.getenv("STEP0_SORT_TYPE", "1"))
@@ -90,7 +105,7 @@ def _get_query_field(schema_fields: List[Dict[str, Any]], name: str) -> Dict[str
     for f in schema_fields:
         if f.get("name") == name:
             return f
-    raise RuntimeError(f"Query '{name}' não encontrada no schema. Disponíveis: {[x.get('name') for x in schema_fields]}")
+    raise RuntimeError(f"Query '{name}' não encontrada no schema.")
 
 
 def _introspect_type_fields(client: ShopeeAffiliatesClient, type_name: str) -> List[Dict[str, Any]]:
@@ -108,11 +123,7 @@ def _detect_nodes_type(client: ShopeeAffiliatesClient, query_field: Dict[str, An
         raise RuntimeError("Não consegui identificar o tipo de retorno da query.")
 
     ret_fields = _introspect_type_fields(client, return_type)
-    nodes_field = None
-    for f in ret_fields:
-        if f["name"] == "nodes":
-            nodes_field = f
-            break
+    nodes_field = next((f for f in ret_fields if f["name"] == "nodes"), None)
     if not nodes_field:
         raise RuntimeError(f"Tipo '{return_type}' não possui campo 'nodes'.")
 
@@ -133,7 +144,6 @@ def _pick_existing_fields(node_type_fields: List[Dict[str, Any]]) -> List[str]:
 def _build_variables(args: List[Dict[str, Any]], page: int, limit: int) -> Tuple[Dict[str, Any], Dict[str, str]]:
     vars_payload: Dict[str, Any] = {}
     var_defs: Dict[str, str] = {}
-
     arg_names = {a["name"]: a for a in args}
 
     def put(name: str, value: Any):
@@ -216,34 +226,29 @@ def _normalize_nodes(nodes: List[Dict[str, Any]]) -> pd.DataFrame:
             "avaliacao": rating,
             "categoria": categoria,
             "imageUrl": img,
+            "image_link": img,
             "ingested_at": now,
             "source": QUERY_NAME,
         }
-
-        for k in ["commissionRate", "discountPercentage", "discountPercent", "discountRate", "offerType", "collectionId", "periodStartTime", "periodEndTime", "shopId", "shopName"]:
-            if k in n:
-                row[k] = n.get(k)
-
         rows.append(row)
 
     return pd.DataFrame(rows)
 
 
-def _upsert_excel(path_xlsx: str, df_new: pd.DataFrame) -> None:
-    os.makedirs(os.path.dirname(path_xlsx), exist_ok=True)
+def _upsert_excel(path_xlsx: Path, df_new: pd.DataFrame) -> None:
+    path_xlsx.parent.mkdir(parents=True, exist_ok=True)
     key = "link_afiliado"
 
-    if os.path.exists(path_xlsx):
+    if path_xlsx.exists():
         df_old = pd.read_excel(path_xlsx)
-        if key in df_old.columns:
-            df = pd.concat([df_old, df_new], ignore_index=True)
-            df[key] = df[key].astype(str).fillna("").str.strip()
-            df = df[df[key].str.len() > 0]
-            df = df.drop_duplicates(subset=[key], keep="last")
-        else:
-            df = pd.concat([df_old, df_new], ignore_index=True)
+        df = pd.concat([df_old, df_new], ignore_index=True)
     else:
         df = df_new
+
+    if key in df.columns:
+        df[key] = df[key].astype(str).fillna("").str.strip()
+        df = df[df[key].str.len() > 0]
+        df = df.drop_duplicates(subset=[key], keep="last")
 
     df.to_excel(path_xlsx, index=False)
 
@@ -255,13 +260,19 @@ def main():
     qf = _get_query_field(schema_fields, QUERY_NAME)
     args = qf.get("args") or []
 
-    ret_type, nodes_type = _detect_nodes_type(client, qf)
+    _, nodes_type = _detect_nodes_type(client, qf)
     node_fields_meta = _introspect_type_fields(client, nodes_type)
     chosen_fields = _pick_existing_fields(node_fields_meta)
 
+    print("=== STEP0 FETCH OFFERS ===")
+    print(f"QUERY: {QUERY_NAME}")
+    print(f"LIMIT: {LIMIT} | MAX_PAGES: {MAX_PAGES} | KEYWORD: {KEYWORD} | SORT_TYPE: {SORT_TYPE}")
+    print(f"nodes_type: {nodes_type}")
+    print(f"campos nodes ({len(chosen_fields)}): {chosen_fields}")
+    print("==========================")
+
     all_nodes: List[Dict[str, Any]] = []
     page = 1
-    removed = 0
 
     while page <= MAX_PAGES:
         variables, var_defs = _build_variables(args, page=page, limit=LIMIT)
@@ -272,33 +283,22 @@ def main():
 
         payload = data.get(QUERY_NAME)
         if not payload:
-            raise RuntimeError(f"Resposta não contém '{QUERY_NAME}'. Keys: {list(data.keys()) if isinstance(data, dict) else None}")
+            raise RuntimeError(f"Resposta não contém '{QUERY_NAME}'.")
 
         nodes = payload.get("nodes") or []
         page_info = payload.get("pageInfo") or {}
-        all_nodes.extend(nodes)
 
-        has_next = bool(page_info.get("hasNextPage"))
-        if not has_next:
+        all_nodes.extend(nodes)
+        print(f"[PAGE {page}] nodes={len(nodes)} | total={len(all_nodes)} | hasNext={bool(page_info.get('hasNextPage'))}")
+
+        if not bool(page_info.get("hasNextPage")):
             break
         page += 1
 
     df_new = _normalize_nodes(all_nodes)
-
-    if "link_afiliado" in df_new.columns:
-        df_new["link_afiliado"] = df_new["link_afiliado"].astype(str).fillna("").str.strip()
-        before = len(df_new)
-        df_new = df_new[df_new["link_afiliado"].str.len() > 0]
-        removed += (before - len(df_new))
-
     _upsert_excel(OUT_XLSX, df_new)
 
     print(f"OK: {len(df_new)} ofertas processadas. Excel atualizado em: {OUT_XLSX}")
-    print(f"INFO Step0: query usada: {QUERY_NAME}")
-    print(f"INFO Step0: return_type={ret_type} | nodes_type={nodes_type}")
-    print(f"INFO Step0: campos em nodes usados ({len(chosen_fields)}): {chosen_fields}")
-    if removed:
-        print(f"INFO Step0: removidos {removed} itens sem link.")
 
 
 if __name__ == "__main__":

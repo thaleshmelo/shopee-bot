@@ -1,0 +1,41 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.pyd
+*.pyo
+*.pkl
+.venv/
+venv/
+.env
+
+# ---- OS/Editor ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Project generated data ----
+data/
+outputs/
+
+# ---- Playwright / browser profile (se for gerado localmente) ----
+.wa_chrome_profile/
+tmp_media/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+
+# Data/outputs gerados
+data/
+outputs/
+
+# Logs e temporários
+*.log
+*.tmp
+
+# Playwright profile (se você usa perfil persistente local)
+.wa_chrome_profile/
